@@ -1,14 +1,16 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-from django.db import models
-from django.conf import settings
-from libs import ModelMixin, human_datetime
-from apps.account.models import User
-from apps.config.models import Environment
-import subprocess
 import json
 import os
+import subprocess
+
+from django.conf import settings
+from django.db import models
+
+from apps.account.models import User
+from apps.config.models import Environment
+from libs import ModelMixin, human_datetime
 
 
 class App(models.Model, ModelMixin):
@@ -39,6 +41,7 @@ class Deploy(models.Model, ModelMixin):
     EXTENDS = (
         ('1', '常规发布'),
         ('2', '自定义发布'),
+        ('3', 'Jenkins发布'),
     )
     app = models.ForeignKey(App, on_delete=models.PROTECT)
     env = models.ForeignKey(Environment, on_delete=models.PROTECT)
@@ -52,33 +55,44 @@ class Deploy(models.Model, ModelMixin):
     updated_at = models.CharField(max_length=20, null=True)
     updated_by = models.ForeignKey(User, models.PROTECT, related_name='+', null=True)
 
-    @property
-    def extend_obj(self):
-        cls = DeployExtend1 if self.extend == '1' else DeployExtend2
-        return cls.objects.filter(deploy=self).first()
 
-    def to_dict(self, *args, **kwargs):
-        deploy = super().to_dict(*args, **kwargs)
-        deploy['app_key'] = self.app_key if hasattr(self, 'app_key') else None
-        deploy['app_name'] = self.app_name if hasattr(self, 'app_name') else None
-        deploy['host_ids'] = json.loads(self.host_ids)
-        deploy['rst_notify'] = json.loads(self.rst_notify)
-        deploy.update(self.extend_obj.to_dict())
-        return deploy
 
-    def delete(self, using=None, keep_parents=False):
-        deploy_id = self.id
-        super().delete(using, keep_parents)
-        repo_dir = os.path.join(settings.REPOS_DIR, str(deploy_id))
-        build_dir = os.path.join(settings.BUILD_DIR, f'{deploy_id}_*')
-        subprocess.Popen(f'rm -rf {repo_dir} {repo_dir + "_*"} {build_dir}', shell=True)
+@property
+def extend_obj(self):
+    if self.extend == '1':
+        cls = DeployExtend1
+    elif self.extend == '2':
+        cls = DeployExtend2
+    else:  # '3' Jenkins发布
+        cls = DeployExtend3
+    return cls.objects.filter(deploy=self).first()
 
-    def __repr__(self):
-        return '<Deploy app_id=%r env_id=%r>' % (self.app_id, self.env_id)
 
-    class Meta:
-        db_table = 'deploys'
-        ordering = ('-id',)
+def to_dict(self, *args, **kwargs):
+    deploy = super().to_dict(*args, **kwargs)
+    deploy['app_key'] = self.app_key if hasattr(self, 'app_key') else None
+    deploy['app_name'] = self.app_name if hasattr(self, 'app_name') else None
+    deploy['host_ids'] = json.loads(self.host_ids)
+    deploy['rst_notify'] = json.loads(self.rst_notify)
+    deploy.update(self.extend_obj.to_dict())
+    return deploy
+
+
+def delete(self, using=None, keep_parents=False):
+    deploy_id = self.id
+    super().delete(using, keep_parents)
+    repo_dir = os.path.join(settings.REPOS_DIR, str(deploy_id))
+    build_dir = os.path.join(settings.BUILD_DIR, f'{deploy_id}_*')
+    subprocess.Popen(f'rm -rf {repo_dir} {repo_dir + "_*"} {build_dir}', shell=True)
+
+
+def __repr__(self):
+    return '<Deploy app_id=%r env_id=%r>' % (self.app_id, self.env_id)
+
+
+class Meta:
+    db_table = 'deploys'
+    ordering = ('-id',)
 
 
 class DeployExtend1(models.Model, ModelMixin):
@@ -122,3 +136,22 @@ class DeployExtend2(models.Model, ModelMixin):
 
     class Meta:
         db_table = 'deploy_extend2'
+
+
+class DeployExtend3(models.Model, ModelMixin):
+    deploy = models.OneToOneField(Deploy, primary_key=True, on_delete=models.CASCADE)
+    jenkins_url = models.CharField(max_length=255)
+    job_name = models.CharField(max_length=100)
+    parameters = models.TextField(null=True)  # JSON格式存储Jenkins参数
+    credential_id = models.CharField(max_length=100, null=True)  # Jenkins凭证ID
+
+    def to_dict(self, *args, **kwargs):
+        tmp = super().to_dict(*args, **kwargs)
+        tmp['parameters'] = json.loads(self.parameters) if self.parameters else {}
+        return tmp
+
+    def __repr__(self):
+        return '<DeployExtend3 deploy_id=%r>' % self.deploy_id
+
+    class Meta:
+        db_table = 'deploy_extend3'
