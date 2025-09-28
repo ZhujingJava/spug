@@ -17,6 +17,7 @@ KEYS_DEFAULT = {
     'private_key': None,
     'public_key': None,
     'spug_push_key': None,
+    'jenkins_config': None,
 }
 
 
