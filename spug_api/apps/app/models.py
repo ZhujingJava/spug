@@ -39,6 +39,7 @@ class Deploy(models.Model, ModelMixin):
     EXTENDS = (
         ('1', '常规发布'),
         ('2', '自定义发布'),
+        ('3', 'Jenkins发布'),
     )
     app = models.ForeignKey(App, on_delete=models.PROTECT)
     env = models.ForeignKey(Environment, on_delete=models.PROTECT)
@@ -54,7 +55,14 @@ class Deploy(models.Model, ModelMixin):
 
     @property
     def extend_obj(self):
-        cls = DeployExtend1 if self.extend == '1' else DeployExtend2
+        if self.extend == '1':
+            cls = DeployExtend1
+        elif self.extend == '2':
+            cls = DeployExtend2
+        elif self.extend == '3':
+            cls = DeployExtend3
+        else:
+            return None
         return cls.objects.filter(deploy=self).first()
 
     def to_dict(self, *args, **kwargs):
@@ -122,3 +130,36 @@ class DeployExtend2(models.Model, ModelMixin):
 
     class Meta:
         db_table = 'deploy_extend2'
+
+
+
+class DeployExtend3(models.Model, ModelMixin):
+    # 与主表的关联关系 (必需)
+    deploy = models.OneToOneField(Deploy, primary_key=True, on_delete=models.CASCADE)
+
+    # Jenkins Job 的名称 (必需)
+    # 这是告诉 Spug 要触发 Jenkins 上的哪一个任务
+    job_name = models.CharField(max_length=255, help_text="Jenkins Job 的完整路径名称，例如 'WebApp/build-frontend'")
+
+
+    git_repo = models.CharField(max_length=255,null=True,  help_text="Jenkins Job 所依赖的 Git 仓库")
+    # 参数化构建 (强烈建议保留)
+    # 不同的发布配置，需要传递给 Jenkins 的参数通常是不同的
+    job_params = models.TextField(null=True, blank=True, help_text="传递给Jenkins的自定义参数，JSON格式的键值对")
+
+    def to_dict(self, *args, **kwargs):
+        tmp = super().to_dict(*args, **kwargs)
+        if self.job_params:
+            try:
+                tmp['job_params'] = json.loads(self.job_params)
+            except (json.JSONDecodeError, TypeError):
+                tmp['job_params'] = {}
+        else:
+            tmp['job_params'] = {}
+        return tmp
+
+    def __repr__(self):
+        return f'<DeployExtend3 deploy_id={self.deploy_id}>'
+
+    class Meta:
+        db_table = 'deploy_extend3'

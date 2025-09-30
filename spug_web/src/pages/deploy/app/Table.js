@@ -89,11 +89,20 @@ function ComTable() {
         loading={record['deploys'] === undefined}
         dataSource={record['deploys']}
         pagination={false}>
-        <Table.Column width={80} title="模式" dataIndex="extend" render={value => value === '1' ?
-          <OrderedListOutlined style={{fontSize: 20, color: '#1890ff'}}/> :
-          <BuildOutlined style={{fontSize: 20, color: '#1890ff'}}/>}/>
+        <Table.Column width={80} title="模式" dataIndex="extend" render={value => {
+          if (value === '1') {
+            return <OrderedListOutlined style={{fontSize: 20, color: '#1890ff'}} title="常规发布"/>;
+          } else if (value === '2') {
+            return <BuildOutlined style={{fontSize: 20, color: '#1890ff'}} title="自定义发布"/>;
+          } else if (value === '3') {
+            return <BuildOutlined style={{fontSize: 20, color: '#faad14'}} title="Jenkins发布"/>;
+          }
+          return <BuildOutlined style={{fontSize: 20, color: '#ff4d4f'}} title="未知类型"/>;
+        }}/>
+
         <Table.Column title="发布环境" dataIndex="env_id" render={value => lds.get(envStore.idMap, `${value}.name`)}/>
-        <Table.Column title="关联主机" dataIndex="host_ids" render={value => `${value.length} 台`}/>
+        <Table.Column title="关联主机" dataIndex="host_ids" render={value => (value && Array.isArray(value)) ? `${value.length} 台` : '0 台'}/>
+
         <Table.Column title="发布审核" dataIndex="is_audit"
                       render={value => value ? <Tag color="green">开启</Tag> : <Tag color="red">关闭</Tag>}/>
         {hasPermission('deploy.app.config|deploy.app.edit') && (

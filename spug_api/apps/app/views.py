@@ -4,7 +4,7 @@
 from django.views.generic import View
 from django.db.models import F
 from libs import JsonParser, Argument, json_response, auth
-from apps.app.models import App, Deploy, DeployExtend1, DeployExtend2
+from apps.app.models import App, Deploy, DeployExtend1, DeployExtend2, DeployExtend3
 from apps.config.models import Config, ConfigHistory, Service
 from apps.app.utils import fetch_versions, remove_repo
 from apps.setting.utils import AppSetting
@@ -125,8 +125,8 @@ class DeployView(View):
             Argument('id', type=int, required=False),
             Argument('app_id', type=int, help='请选择应用'),
             Argument('env_id', type=int, help='请选择环境'),
-            Argument('host_ids', type=list, filter=lambda x: len(x), help='请选择要部署的主机'),
-            Argument('rst_notify', type=dict, help='请选择发布结果通知方式'),
+            Argument('host_ids', type=list, required=False, help='请选择要部署的主机'),
+            Argument('rst_notify', type=dict,required=False, help='请选择发布结果通知方式'),
             Argument('extend', filter=lambda x: x in dict(Deploy.EXTENDS), help='请选择发布类型'),
             Argument('is_parallel', type=bool, default=True),
             Argument('is_audit', type=bool, default=False)
@@ -135,8 +135,11 @@ class DeployView(View):
             deploy = Deploy.objects.filter(app_id=form.app_id, env_id=form.env_id).first()
             if deploy and deploy.id != form.id:
                 return json_response(error='应用在该环境下已经存在发布配置')
+            # print(form.host_ids)
             form.host_ids = json.dumps(form.host_ids)
+            # print(form.rst_notify)
             form.rst_notify = json.dumps(form.rst_notify)
+
             if form.extend == '1':
                 extend_form, error = JsonParser(
                     Argument('git_repo', handler=str.strip, help='请输入git仓库地址'),
@@ -180,6 +183,31 @@ class DeployView(View):
                 else:
                     deploy = Deploy.objects.create(created_by=request.user, **form)
                     DeployExtend2.objects.create(deploy=deploy, **extend_form)
+            elif form.extend == '3':
+
+                extend_form, error = JsonParser(
+
+                    Argument('job_name', handler=str.strip, help='请输入Jenkins任务名称'),
+                    Argument('git_repo', handler=str.strip, help='请输入Jenkins任务名称'),
+                    # Argument('jenkins_url', handler=str.strip, required=False, default=''),
+                    # Argument('job_params', type=dict, required=False, default={})
+                ).parse(request.body)
+                if error:
+                    return json_response(error=error)
+                # # 序列化处理
+                # if extend_form.job_params is not None:
+                #     extend_form.job_params = json.dumps(extend_form.job_params)
+                # else:
+                #     extend_form.job_params = None  # 或者设置默认值 '{}'
+
+                # extend_form.job_params = json.dumps(extend_form.job_params)
+                if form.id:
+                    Deploy.objects.filter(pk=form.id).update(**form)
+                    DeployExtend3.objects.filter(deploy_id=form.id).update(**extend_form)
+                else:
+                    deploy = Deploy.objects.create(created_by=request.user, **form)
+                    DeployExtend3.objects.create(deploy=deploy, **extend_form)
+
         return json_response(error=error)
 
     @auth('deploy.app.del')
