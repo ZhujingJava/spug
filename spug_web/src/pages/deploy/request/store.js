@@ -17,6 +17,7 @@ class Store {
   @observable addVisible = false;
   @observable ext1Visible = false;
   @observable ext2Visible = false;
+  @observable ext3Visible = false;
   @observable batchVisible = false;
   @observable approveVisible = false;
   @observable rollbackVisible = false;
@@ -101,8 +102,11 @@ class Store {
     this.record = {deploy_id: id, app_host_ids: host_ids, require_upload};
     if (deploy.extend === '1') {
       this.ext1Visible = true
-    } else {
+    } else if (deploy.extend === '2'){
       this.ext2Visible = true
+    }
+    else if (deploy.extend === '3'){
+      this.ext3Visible = true
     }
     this.addVisible = false
   };
@@ -119,8 +123,11 @@ class Store {
     if (info.plan) this.record.plan = moment(info.plan);
     if (info['app_extend'] === '1') {
       this.ext1Visible = true
-    } else {
+    } else if (info['app_extend'] === '2') {
       this.ext2Visible = true
+    }
+    else if (info['app_extend'] === '3') {
+      this.ext3Visible = true
     }
   };
 
@@ -131,6 +138,7 @@ class Store {
 
   showConsole = (info, isClose) => {
     const index = lds.findIndex(this.tabs, x => x.id === info.id);
+  console.log('index',index)
     if (isClose) {
       if (index !== -1) {
         this.tabs[index] = {}

@@ -76,7 +76,7 @@ export default observer(function AppSelector(props) {
               {records.map(item => (
                 <div key={item.id} className={styles.appItem} onClick={() => props.onSelect(item)}>
                   {item.extend === '1' ? <OrderedListOutlined/> : <BuildOutlined/>}
-                  <div className={styles.body}>{item.app_name}</div>
+                  <div className={styles.body}>{item.app_name}222</div>
                   <div style={{color: '#999'}}>{item.app_key}</div>
                 </div>
               ))}

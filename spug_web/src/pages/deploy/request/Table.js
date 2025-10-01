@@ -198,6 +198,7 @@ function ComTable() {
   }
 
   function handleDeploy(e, info, mode) {
+    console.log('info',info)
     info.mode = mode
     store.showConsole(info);
   }

@@ -72,14 +72,12 @@ export default observer(function () {
     formData['host_ids'] = host_ids;
     formData['type'] = store.record.type;
     formData['extra'] = [git_type, extra1, extra2];
-    console.log('ext1Form:',formData)
-    console.log('ext1Form')
+    console.log('ext3Form-request:',formData)
     if (plan) formData.plan = plan.format('YYYY-MM-DD HH:mm:00');
-    http.post('/api/deploy/request/ext1/', formData)
+    http.post('/api/deploy/request/ext3/', formData)
       .then(res => {
-        console.log('ext1Form')
         message.success('操作成功');
-        store.ext1Visible = false;
+        store.ext3Visible = false;
         store.fetchRecords()
       }, () => setLoading(false))
   }
@@ -147,7 +145,7 @@ export default observer(function () {
       width={800}
       maskClosable={false}
       title={`${store.record.id ? '编辑' : '新建'}发布申请`}
-      onCancel={() => store.ext1Visible = false}
+      onCancel={() => store.ext3Visible = false}
       confirmLoading={loading}
       onOk={handleSubmit}>
       <Form form={form} initialValues={store.record} labelCol={{span: 5}} wrapperCol={{span: 17}}>

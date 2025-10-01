@@ -14,6 +14,7 @@ import {Link} from "react-router-dom";
 export default observer(function Ext3Setup1() {
     const [envs, setEnvs] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [visible, setVisible] = useState(false);
 
     function updateEnvs() {
         const ids = store.currentRecord['deploys'].map(x => x.env_id);
@@ -67,14 +68,18 @@ export default observer(function Ext3Setup1() {
                     <Link disabled={store.isReadOnly} to="/config/environment">新建环境</Link>
                 </Form.Item>
             </Form.Item>
+            {/*<Form.Item required label="Git仓库地址">*/}
+            {/*    <Input*/}
+            {/*        disabled={store.isReadOnly}*/}
+            {/*        value={info.git_repo}*/}
+            {/*        onChange={e => info.git_repo = e.target.value}*/}
+            {/*        placeholder="请输入Git仓库地址"/>*/}
+            {/*</Form.Item>*/}
             <Form.Item required label="Git仓库地址">
-                <Input
-                    disabled={store.isReadOnly}
-                    value={info.git_repo}
-                    onChange={e => info.git_repo = e.target.value}
-                    placeholder="请输入Git仓库地址"/>
+                <Input disabled={store.isReadOnly} value={info['git_repo']}
+                       onChange={e => info['git_repo'] = e.target.value}
+                       placeholder="请输入Git仓库地址"/>
             </Form.Item>
-
             <Form.Item required label="Jenkins任务名称">
                 <Input
                     disabled={store.isReadOnly}
@@ -93,5 +98,6 @@ export default observer(function Ext3Setup1() {
                 </Button>
             </Form.Item>
         </Form>
+
     )
 })
