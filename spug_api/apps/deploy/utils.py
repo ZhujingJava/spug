@@ -1,21 +1,28 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-from django_redis import get_redis_connection
-from django.conf import settings
-from django.db import close_old_connections
-from libs.utils import AttrDict, human_time, render_str
-from apps.host.models import Host
-from apps.config.utils import compose_configs
-from apps.repository.models import Repository
-from apps.repository.utils import dispatch as build_repository
-from apps.deploy.models import DeployRequest
-from apps.deploy.helper import Helper, SpugError
+import json
+import os
+import uuid
 from concurrent import futures
 from functools import partial
-import json
-import uuid
-import os
+from logging import debug
+from time import sleep, time
+
+import requests
+from django.conf import settings
+from django.db import close_old_connections
+from django_redis import get_redis_connection
+from requests.auth import HTTPBasicAuth
+
+from apps.config.utils import compose_configs
+from apps.deploy.helper import Helper, SpugError
+from apps.deploy.models import DeployRequest
+from apps.host.models import Host
+from apps.repository.models import Repository
+from apps.repository.utils import dispatch as build_repository
+from apps.setting.models import Setting
+from libs.utils import AttrDict, human_time, render_str
 
 REPOS_DIR = settings.REPOS_DIR
 BUILD_DIR = settings.BUILD_DIR
@@ -54,11 +61,13 @@ def dispatch(req, fail_mode=False):
         configs_env = {f'_SPUG_{k.upper()}': v for k, v in configs.items()}
         env.update(configs_env)
 
+        # 在 dispatch 函数中修改条件判断
         if req.deploy.extend == '1':
             _ext1_deploy(req, helper, env)
-        else:
+        elif req.deploy.extend == '2':
             _ext2_deploy(req, helper, env)
-        req.status = '3'
+        else:  # extend == '3'
+            _ext3_deploy(req, helper, env)
     except Exception as e:
         req.status = '-3'
         raise e
@@ -71,6 +80,107 @@ def dispatch(req, fail_mode=False):
         )
         helper.clear()
         Helper.send_deploy_notify(req)
+
+# 编写 _ext3_deploy方法
+def _ext3_deploy(req, helper, env):
+    # debug('_ext_deploy',req)
+    extend_obj = req.deploy.extend_obj
+    jenkins_config = Setting.objects.get(key='jenkins_config')
+    # 将str类型的jenkins_url转换为json
+    jenkins_url = json.loads(jenkins_config.value)['url']
+    # 确保 URL 包含协议前缀
+    if not jenkins_url.startswith(('http://', 'https://')):
+        jenkins_url = 'http://' + jenkins_url
+
+    try:
+        # 获取 Jenkins crumb
+        crumb_url = f"{jenkins_url.rstrip('/')}/crumbIssuer/api/json"
+        # 设置 Basic Auth 认证信息
+        auth = HTTPBasicAuth('zhujing', '118e1f6214e99c9bb39a9fe779bf1e2fa8')
+
+        # 请求 Jenkins crumb
+        # 使用 POST 请求 Jenkins crumb
+        crumb_response = requests.post(crumb_url, auth=auth, timeout=30)
+        crumb_response.raise_for_status()
+        debug('crumb_response', crumb_response.json())
+        crumb_data = crumb_response.json()
+        crumb_field = crumb_data['crumbRequestField']  # 例如: "Jenkins-Crumb"
+        crumb_value = crumb_data['crumb']  # 例如: "55b721245b33f1c8b1227237c31743ddfcf77e6248047e7223a3c49a5cfac596"
+        # 获取job_url
+        debug('crumb_value', crumb_value)
+
+        # 准备触发构建的请求
+        build_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/buildWithParameters"
+
+        # 设置请求头，包含 crumb 和认证信息
+        headers = {
+            crumb_field: crumb_value,  # 使用从API获取的实际字段名和值
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+
+        # 如果需要传递参数，可以在这里添加
+        params = {'name': 'zhujing'}  # 如果配置了构建令牌
+        build_url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+
+        # 触发 Jenkins 构建，此时返回响应头
+        build_response = requests.post(build_url, headers=headers, auth=auth, timeout=30)
+        # 获取响应头Location
+        build_location = build_response.headers.get('Location')
+        # build_location后缀增加/api/json获取 executable下number，这个是真实的构建号
+        print('build_location',build_location)
+        build_url = build_location + "api/json"
+        # 这里加一个循环，可能获取不到，这里加一个循环，最多尝试5次
+        build_response = None;
+        build_number = None;
+        start = 0
+        # 修改获取构建号的循环逻辑
+        for i in range(10):  # 增加尝试次数
+            build_response = requests.get(build_url, headers=headers, auth=auth, timeout=30)
+            build_response.raise_for_status()
+
+            response_data = build_response.json()
+            # 检查是否已经有executable字段
+            if 'executable' in response_data and 'number' in response_data['executable']:
+                # TODO: 需要和
+                build_number = response_data['executable']['number']
+                break
+            debug(f'等待构建开始，第{i + 1}次尝试...')
+            sleep(3)  # 增加等待时间
+        # 这里需要获取返回的jenkins任务队列，获取真实的build_number
+        build_number = build_response.json()['executable']['number']
+        #  断言build_number不为空
+        assert build_number is not None, '构建失败'
+        # 推送到websockt 初始化信息
+        # 这里可能要重构任务名
+        helper.send_info('local', f'Jenkins任务已触发，真实任务构建号为: {build_number}\r\n')
+        log_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/logText/progressiveText"
+        start = 0
+        #  拼接状态请求 stage url
+        stage_url=f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/wfapi/describe"
+        while True:
+            resp = requests.get(log_url, auth=auth, params={'start': start})
+            # 获取状态响应结果
+            stage_res = requests.get(stage_url, auth=auth)
+            print('stage_res',stage_res.json())
+            requests.get(log_url, auth=auth)
+            # print(resp.text, end="")
+            helper.send_info('local', resp.text)
+            more_data = resp.headers.get("X-More-Data")
+            text_size = int(resp.headers.get("X-Text-Size", 0))
+            start = text_size
+            if more_data != "true":
+                break
+            sleep(1)
+    except requests.exceptions.RequestException as e:
+        helper.send_error('local', f'Jenkins请求失败: {str(e)}')
+        raise SpugError(f'Jenkins部署失败: {str(e)}')
+    except KeyError as e:
+        helper.send_error('local', f'Jenkins crumb数据解析失败: {str(e)}')
+        raise SpugError(f'Jenkins部署失败: {str(e)}')
+
+
+def _jenkins_log():
+    print('abcd')
 
 
 def _ext1_deploy(req, helper, env):
@@ -236,7 +346,8 @@ def _deploy_ext1_host(req, helper, h_id, env):
         code, _ = ssh.exec_command_raw(
             f'mkdir -p {extend.dst_repo} {base_dst_dir} && [ -e {extend.dst_dir} ] && [ ! -L {extend.dst_dir} ]')
         if code == 0:
-            helper.send_error(host.id, f'检测到该主机的发布目录 {extend.dst_dir!r} 已存在，为了数据安全请自行备份后删除该目录，Spug 将会创建并接管该目录。')
+            helper.send_error(host.id,
+                              f'检测到该主机的发布目录 {extend.dst_dir!r} 已存在，为了数据安全请自行备份后删除该目录，Spug 将会创建并接管该目录。')
         if req.type == '2':
             helper.send_step(h_id, 1, '\033[33m跳过√\033[0m\r\n')
         else:

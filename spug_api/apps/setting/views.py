@@ -1,19 +1,21 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-import django
-from django.core.cache import cache
-from django.conf import settings
-from libs import JsonParser, Argument, json_response, auth
-from libs.utils import generate_random_str
-from libs.mail import Mail
-from libs.push import get_balance, send_login_code
-from libs.mixins import AdminView
-from apps.setting.utils import AppSetting
-from apps.setting.models import Setting, KEYS_DEFAULT
-from copy import deepcopy
 import platform
+from copy import deepcopy
+
+import django
 import ldap
+from django.conf import settings
+from django.core.cache import cache
+
+from apps.setting.models import Setting, KEYS_DEFAULT
+from apps.setting.utils import AppSetting
+from libs import JsonParser, Argument, json_response, auth
+from libs.mail import Mail
+from libs.mixins import AdminView
+from libs.push import get_balance, send_login_code
+from libs.utils import generate_random_str
 
 
 class SettingView(AdminView):
@@ -137,6 +139,20 @@ def handle_push_bind(request):
         AppSetting.set('spug_push_key', form.spug_push_key)
         return json_response(res)
     return json_response(error=error)
+
+
+def get_jenkins_config(request):
+    """
+    请求 key 为 jenkins_config 的数据并返回
+    """
+    # 使用 filter 获取记录，避免 DoesNotExist 异常
+    jenkins_settings = Setting.objects.filter(key='jenkins_config')
+    print('jenkins_settings', jenkins_settings)
+    if jenkins_settings.exists():
+        return json_response(jenkins_settings.first().real_val)
+    # 如果不存在就抛出异常
+
+    return json_response(error='请先配置 Jenkins 配置')
 
 
 @auth('admin')

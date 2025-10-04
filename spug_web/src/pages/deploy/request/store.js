@@ -57,6 +57,7 @@ class Store {
   fetchInfo = (id) => {
     http.get('/api/deploy/request/info/', {params: {id}})
       .then(res => {
+        console.log('info',res)
         for (let item of this.records) {
           if (item.id === id) {
             Object.assign(item, res, {key: Date.now()})

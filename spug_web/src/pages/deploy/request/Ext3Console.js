@@ -13,7 +13,7 @@ import styles from './index.module.less';
 import store from './store';
 
 function Ext3Console(props) {
-    const outputs = useLocalStore(() => ({jenkins: {data: ''}}));
+    const outputs = useLocalStore(() => ({local: {data: ''}}));
     const terms = useLocalStore(() => ({}));
     const [mini, setMini] = useState(false);
     const [visible, setVisible] = useState(true);
@@ -41,13 +41,15 @@ function Ext3Console(props) {
 
     function doDeploy() {
         // 通过id获取request信息
-        const git_branch=props.request.extra[1];
-        const commit_id=props.request.extra[2];
-        // 获取settings下jenkins_config数据
-        http.get(`/api/setting/jenkins_config/`).then(res => {})
+        const git_branch = props.request.extra[1];
+        const deploy_id = props.request.deploy_id;
+        const commit_id = props.request.extra[2];
+
+// 修改为通过后端API代理请求Jenkins
+
 
         let socket;
-        http.post(`/api/deploy/request/jenkins/${props.request.id}/`, {mode: props.request.mode})
+        http.post(`/api/deploy/request/${props.request.id}/`, {mode: props.request.mode})
             .then(res => {
                 console.log('outputs', res.outputs)
                 Object.assign(outputs, res.outputs)
@@ -61,6 +63,7 @@ function Ext3Console(props) {
 
     function _makeSocket(index = 0) {
         const token = props.request.id;
+        console.log('request.id',token)
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws/request/${token}/?x-token=${X_TOKEN}`);
         socket.onopen = () => socket.send(String(index));
@@ -167,7 +170,7 @@ function Ext3Console(props) {
                                     style={{marginBottom: 12}}
                                 />
                             )}
-                            <OutView setTerm={term => handleSetTerm(term, 'jenkins')}/>
+                            <OutView setTerm={term => handleSetTerm(term, 'local')}/>
                         </Collapse.Panel>
                     </Collapse>
                 </Skeleton>

@@ -147,6 +147,7 @@ class DeployExtend3(models.Model, ModelMixin):
     # 不同的发布配置，需要传递给 Jenkins 的参数通常是不同的
     job_params = models.TextField(null=True, blank=True, help_text="传递给Jenkins的自定义参数，JSON格式的键值对")
 
+    job_build_number = models.IntegerField(null=True, blank=True, help_text="指定构建编号，如果指定了编号，则忽略 job_params 参数")
     def to_dict(self, *args, **kwargs):
         tmp = super().to_dict(*args, **kwargs)
         if self.job_params:

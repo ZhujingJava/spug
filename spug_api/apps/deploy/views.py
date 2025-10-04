@@ -143,6 +143,7 @@ class RequestDetailView(View):
 
     @auth('deploy.request.do')
     def post(self, request, r_id):
+        # print('ext1console发布')
         form, _ = JsonParser(Argument('mode', default='all')).parse(request.body)
         query = {'pk': r_id}
         if not request.user.is_supper:
@@ -152,9 +153,10 @@ class RequestDetailView(View):
         req = DeployRequest.objects.filter(**query).first()
         if not req:
             return json_response(error='未找到指定发布申请')
+        # -3为待执行,1为执行中
         if req.status not in ('1', '-3'):
             return json_response(error='该申请单当前状态还不能执行发布')
-
+        #  获取所有失败主机
         host_ids = req.fail_host_ids if form.mode == 'fail' else req.host_ids
         hosts = Host.objects.filter(id__in=json.loads(host_ids))
         message = f'{human_time()} 等待调度...        '
@@ -253,7 +255,7 @@ def post_request_ext1(request):
     return json_response(error=error)
 
 def post_jenkins_build(request, r_id):
-    print('jenkins build',r_id)
+
     #
     return json_response(r_id)
 
