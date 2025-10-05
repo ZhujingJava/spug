@@ -101,6 +101,9 @@ class RequestView(View):
 class RequestDetailView(View):
     @auth('deploy.request.view')
     def get(self, request, r_id):
+        # print打印request内容
+
+
         req = DeployRequest.objects.filter(pk=r_id).first()
         if not req:
             return json_response(error='未找到指定发布申请')

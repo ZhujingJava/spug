@@ -83,6 +83,7 @@ def dispatch(req, fail_mode=False):
 
 # 编写 _ext3_deploy方法
 def _ext3_deploy(req, helper, env):
+    rds = get_redis_connection()
     # debug('_ext_deploy',req)
     extend_obj = req.deploy.extend_obj
     jenkins_config = Setting.objects.get(key='jenkins_config')
@@ -150,6 +151,7 @@ def _ext3_deploy(req, helper, env):
         build_number = build_response.json()['executable']['number']
         #  断言build_number不为空
         assert build_number is not None, '构建失败'
+
         # 推送到websockt 初始化信息
         # 这里可能要重构任务名
         helper.send_info('local', f'Jenkins任务已触发，真实任务构建号为: {build_number}\r\n')
@@ -157,20 +159,58 @@ def _ext3_deploy(req, helper, env):
         start = 0
         #  拼接状态请求 stage url
         stage_url=f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/wfapi/describe"
-        while True:
-            resp = requests.get(log_url, auth=auth, params={'start': start})
-            # 获取状态响应结果
+    #  实时获取jenkins日志
+        # 循环获取日志数据直到没有更多数据
+        # 该循环持续从服务器获取日志信息，直到服务器返回没有更多数据为止
+        # while True:
+        #     resp = requests.get(log_url, auth=auth, params={'start': start})
+        #     # 获取状态响应结果
+        #     stage_res = requests.get(stage_url, auth=auth)
+        #     print('stage_res',stage_res.json())
+        #     requests.get(log_url, auth=auth)
+        #     # print(resp.text, end="")
+        #     helper.send_info('local', resp.text)
+        #     more_data = resp.headers.get("X-More-Data")
+        #     text_size = int(resp.headers.get("X-Text-Size", 0))
+        #     start = text_size
+        #     # 检查是否还有更多数据，如果没有则退出循环
+        #     if more_data != "true":
+        #         break
+        #     sleep(1)
+    #    循环监测stage,获取stages字段列表，间隔1秒
+
+    #  输出 jenkins stage状态逻辑
+        build_status = 'IN_PROGRESS'
+        while build_status == 'IN_PROGRESS':
             stage_res = requests.get(stage_url, auth=auth)
-            print('stage_res',stage_res.json())
-            requests.get(log_url, auth=auth)
-            # print(resp.text, end="")
-            helper.send_info('local', resp.text)
-            more_data = resp.headers.get("X-More-Data")
-            text_size = int(resp.headers.get("X-Text-Size", 0))
-            start = text_size
-            if more_data != "true":
-                break
-            sleep(1)
+            stage_data = stage_res.json()
+            #   获取stages字段，判断stages length
+            status = stage_data['status']
+            #  判断status是否SUCCESS，如果是则跳出循环
+            if status == 'SUCCESS':
+                helper.send_info('local', f'Jenkins任务构建完成！\r\n')
+                build_status = 'SUCCESS'
+                req.status = '3'
+            if 'stages' in stage_data:
+                stages = stage_data['stages']
+                # 获取stages数组长度
+                stage_len = len(stages)
+                prev_stage_len = rds.get(f'{req.do_by.username}-{build_number}')
+                if prev_stage_len is not None:
+                    prev_stage_len = int(prev_stage_len)  # 转换为整数
+
+                if prev_stage_len is None and stage_len > 0:
+                    rds.set(f'{req.do_by.username}-{build_number}', stage_len)
+                    for stage in stages:
+                        helper.send_info('local', f'Jenkins任务构建中...{stage["name"]}\r\n')
+                        #  输出stages的name
+                if prev_stage_len is not None and stage_len == prev_stage_len:
+                    continue
+                else:
+                    stages = stages[prev_stage_len:]
+                    for stage in stages:
+                        helper.send_info('local', f'Jenkins任务构建中...{stage["name"]}\r\n')
+                    rds.set(f'{req.do_by.username}-{build_number}', stage_len)
     except requests.exceptions.RequestException as e:
         helper.send_error('local', f'Jenkins请求失败: {str(e)}')
         raise SpugError(f'Jenkins部署失败: {str(e)}')
