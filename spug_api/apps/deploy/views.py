@@ -1,6 +1,8 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
+import ast
+
 from django.views.generic import View
 from django.db.models import F
 from django.conf import settings
@@ -8,7 +10,7 @@ from django.http.response import HttpResponseBadRequest
 from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, human_datetime, human_time, auth
 from apps.deploy.models import DeployRequest
-from apps.app.models import Deploy, DeployExtend2
+from apps.app.models import Deploy, DeployExtend2, DeployExtend3
 from apps.repository.models import Repository
 from apps.deploy.utils import dispatch, Helper
 from apps.host.models import Host
@@ -107,6 +109,13 @@ class RequestDetailView(View):
         req = DeployRequest.objects.filter(pk=r_id).first()
         if not req:
             return json_response(error='未找到指定发布申请')
+        # print('req', req.deploy.__dict__) if req.deploy else print('req', 'None')
+        if req.deploy.extend == '3':
+            extend = DeployExtend3.objects.filter(deploy_id=req.deploy_id).first()
+            if extend and len(req.extra) == 4:
+                build_number=req.extra.split()[3]
+                url = "http://jenkins.i.qdzb-ai.com:8080/"
+
         hosts = Host.objects.filter(id__in=json.loads(req.host_ids))
         outputs = {x.id: {'id': x.id, 'title': x.name, 'data': f'{human_time()} 读取数据...        '} for x in hosts}
         response = {'outputs': outputs, 'status': req.status}
@@ -131,6 +140,8 @@ class RequestDetailView(View):
                         outputs[item['key']]['step'] = item['step']
                     if 'status' in item:
                         outputs[item['key']]['status'] = item['status']
+                else:
+                    outputs[item['key']] = item
             data = rds.lrange(key, counter, counter + 9)
         response['index'] = counter
         if counter == 0:

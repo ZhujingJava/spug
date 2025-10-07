@@ -30,6 +30,7 @@ function Ext3Console(props) {
         http.get(`/api/deploy/request/${props.request.id}/`)
             .then(res => {
                 Object.assign(outputs, res.outputs)
+                console.log('outputs',res)
                 setBuildInfo(res.build_info || {})
                 setTimeout(() => setFetching(false), 100)
                 if (res.status === '2') {

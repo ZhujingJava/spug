@@ -7,7 +7,7 @@ import uuid
 from concurrent import futures
 from functools import partial
 from logging import debug
-from time import sleep, time
+from time import sleep
 
 import requests
 from django.conf import settings
@@ -82,141 +82,176 @@ def dispatch(req, fail_mode=False):
         Helper.send_deploy_notify(req)
 
 # 编写 _ext3_deploy方法
-def _ext3_deploy(req, helper, env):
+def fetch_stage_status(req,jenkins_url, build_number, auth, headers):
+    """ 获取构建的 stage 状态，并实时反馈 """
     rds = get_redis_connection()
-    # debug('_ext_deploy',req)
-    extend_obj = req.deploy.extend_obj
+    prev_stage_len = rds.get(f'{req.do_by.username}-{build_number}')
+    if prev_stage_len is not None:
+        prev_stage_len = int(prev_stage_len)
+    stage_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/wfapi/describe"
+    max_attempts = 100
+    attempt = 0
+
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            stage_res = requests.get(stage_url, auth=auth, headers=headers)
+            stage_res.raise_for_status()
+            stage_data = stage_res.json()
+
+            # 获取当前的构建状态
+            build_status = stage_data.get('status')
+            # 获取当前阶段信息
+            stages = stage_data.get('stages', [])
+            stage_len = len(stages)
+            # 获取当前的构建状态
+            if build_status == 'SUCCESS':
+                return 'SUCCESS', stages[prev_stage_len:]  # 如果构建成功，返回所有阶段
+
+            # 如果阶段数发生变化，实时反馈
+            if prev_stage_len is None:  # 第一次获取阶段数据
+                prev_stage_len = stage_len
+                rds.set(f'{req.do_by.username}-{build_number}', prev_stage_len)
+                return 'IN_PROGRESS', stages  # 返回当前所有阶段信息
+            elif stage_len > prev_stage_len:  # 阶段数增加
+                new_stages = stages[prev_stage_len:]  # 获取新增的阶段
+                prev_stage_len = stage_len
+                rds.set(f'{req.do_by.username}-{build_number}', prev_stage_len)
+                return 'IN_PROGRESS', new_stages  # 返回新增阶段的状态
+            else:
+                # 阶段数未变化，返回空列表
+                return 'IN_PROGRESS', []
+
+
+        except requests.exceptions.RequestException as e:
+            if attempt >= max_attempts:
+                raise SpugError(f'Jenkins构建超时: {str(e)}')
+
+        sleep(2)  # 等待一段时间后重试
+
+    return 'IN_PROGRESS', []  # 超过最大尝试次数后返回 IN_PROGRESS
+
+
+def _ext3_deploy(req, helper, env):
+    """ 部署构建任务 """
+    helper.send_info('local', '即将开始构建，请稍后…………\r\n')
+    rds = get_redis_connection()
     jenkins_config = Setting.objects.get(key='jenkins_config')
-    # 将str类型的jenkins_url转换为json
     jenkins_url = json.loads(jenkins_config.value)['url']
-    # 确保 URL 包含协议前缀
-    if not jenkins_url.startswith(('http://', 'https://')):
-        jenkins_url = 'http://' + jenkins_url
+    jenkins_url = 'http://' + jenkins_url if not jenkins_url.startswith(('http://', 'https://')) else jenkins_url
 
+    auth = HTTPBasicAuth('zhujing', '118e1f6214e99c9bb39a9fe779bf1e2fa8')
+    crumb_field, crumb_value = get_jenkins_crumb(jenkins_url, auth)
+
+    build_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/buildWithParameters"
+    params = {'name': 'zhujing'}
+    build_json_url = trigger_jenkins_build(jenkins_url, build_url, crumb_field, crumb_value, auth, params)
+
+    build_number = get_build_number(build_json_url, {'Authorization': f'Basic {auth}'}, auth)
+
+    # 更新 DeployRequest
+    deploy_request = DeployRequest.objects.get(pk=req.id)
+    extra_data = json.loads(deploy_request.extra) if deploy_request.extra else []
+    extra_data.append(build_number)
+    DeployRequest.objects.filter(pk=req.id).update(extra=json.dumps(extra_data))
+
+    # 获取构建状态
+    build_status = 'IN_PROGRESS'
+    prev_stage_len = rds.get(f'{req.do_by.username}-{build_number}')
+    prev_status = rds.get(f'{req.do_by.username}-{build_number}-status')
+
+    if prev_stage_len is not None:
+        prev_stage_len = int(prev_stage_len)  # 转换为整数
+
+    if prev_status is not None:
+        prev_status = prev_status.decode('utf-8')  # Convert to string from bytes
+
+    # 拼接状态请求 stage url
+    stage_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/wfapi/describe"
+    max_attempts = 100
+    attempt = 0
+
+    # 状态检查逻辑
+    while build_status == 'IN_PROGRESS' and attempt < max_attempts:
+        attempt += 1
+        if attempt >= max_attempts:
+            helper.send_error('local', 'Jenkins构建超时, 请重新发布')
+            raise SpugError('Jenkins构建超时')
+
+        # 获取构建阶段状态
+        build_status, new_stages = fetch_stage_status(req,jenkins_url, build_number, auth,
+                                                      {'Authorization': f'Basic {auth}'})
+
+        # 处理新阶段 - 只有当有新阶段时才输出
+        if new_stages:
+            for stage in new_stages:
+                helper.send_info('local', f'Jenkins任务---{stage.get("name")}----构建中, id号：{stage.get("id")}\r\n')
+
+
+
+            # # 更新阶段数量
+            # stage_len = len(new_stages)
+            # if prev_stage_len is None:
+            #     prev_stage_len = stage_len
+            # else:
+            #     prev_stage_len += stage_len
+            # rds.set(f'{req.do_by.username}-{build_number}', prev_stage_len)
+
+        # 如果构建成功，输出完成信息
+        if build_status == 'SUCCESS':
+            helper.send_info('local', f'Jenkins任务构建完成！\r\n')
+            req.status = '3'
+            break
+
+        # 等待一段时间后继续轮询
+        sleep(2)
+
+    # # 确保在构建完全成功后输出构建完成信息
+    # if build_status == 'SUCCESS':
+    #     helper.send_info('local', f'Jenkins任务构建完成！\r\n')
+    #     req.status = '3'
+
+
+def get_jenkins_crumb(jenkins_url, auth):
+    """ 获取 Jenkins crumb """
+    crumb_url = f"{jenkins_url.rstrip('/')}/crumbIssuer/api/json"
     try:
-        # 获取 Jenkins crumb
-        crumb_url = f"{jenkins_url.rstrip('/')}/crumbIssuer/api/json"
-        # 设置 Basic Auth 认证信息
-        auth = HTTPBasicAuth('zhujing', '118e1f6214e99c9bb39a9fe779bf1e2fa8')
-
-        # 请求 Jenkins crumb
-        # 使用 POST 请求 Jenkins crumb
         crumb_response = requests.post(crumb_url, auth=auth, timeout=30)
         crumb_response.raise_for_status()
-        debug('crumb_response', crumb_response.json())
         crumb_data = crumb_response.json()
-        crumb_field = crumb_data['crumbRequestField']  # 例如: "Jenkins-Crumb"
-        crumb_value = crumb_data['crumb']  # 例如: "55b721245b33f1c8b1227237c31743ddfcf77e6248047e7223a3c49a5cfac596"
-        # 获取job_url
-        debug('crumb_value', crumb_value)
-
-        # 准备触发构建的请求
-        build_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/buildWithParameters"
-
-        # 设置请求头，包含 crumb 和认证信息
-        headers = {
-            crumb_field: crumb_value,  # 使用从API获取的实际字段名和值
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-
-        # 如果需要传递参数，可以在这里添加
-        params = {'name': 'zhujing'}  # 如果配置了构建令牌
-        build_url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
-
-        # 触发 Jenkins 构建，此时返回响应头
+        crumb_field = crumb_data['crumbRequestField']
+        crumb_value = crumb_data['crumb']
+        return crumb_field, crumb_value
+    except requests.exceptions.RequestException as e:
+        raise SpugError(f'Jenkins请求失败: {str(e)}')
+def trigger_jenkins_build(jenkins_url, build_url, crumb_field, crumb_value, auth, params):
+    """ 触发 Jenkins 构建并返回构建信息 """
+    headers = {
+        crumb_field: crumb_value,
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    build_url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+    try:
         build_response = requests.post(build_url, headers=headers, auth=auth, timeout=30)
-        # 获取响应头Location
+        build_response.raise_for_status()
         build_location = build_response.headers.get('Location')
-        # build_location后缀增加/api/json获取 executable下number，这个是真实的构建号
-        print('build_location',build_location)
-        build_url = build_location + "api/json"
-        # 这里加一个循环，可能获取不到，这里加一个循环，最多尝试5次
-        build_response = None;
-        build_number = None;
-        start = 0
-        # 修改获取构建号的循环逻辑
-        for i in range(10):  # 增加尝试次数
+        return build_location + "api/json"
+    except requests.exceptions.RequestException as e:
+        raise SpugError(f'Jenkins构建请求失败: {str(e)}')
+def get_build_number(build_url, headers, auth, max_retries=10):
+    """ 获取 Jenkins 构建号 """
+    for attempt in range(max_retries):
+        try:
             build_response = requests.get(build_url, headers=headers, auth=auth, timeout=30)
             build_response.raise_for_status()
-
             response_data = build_response.json()
-            # 检查是否已经有executable字段
             if 'executable' in response_data and 'number' in response_data['executable']:
-                # TODO: 需要和
-                build_number = response_data['executable']['number']
-                break
-            debug(f'等待构建开始，第{i + 1}次尝试...')
-            sleep(3)  # 增加等待时间
-        # 这里需要获取返回的jenkins任务队列，获取真实的build_number
-        build_number = build_response.json()['executable']['number']
-        #  断言build_number不为空
-        assert build_number is not None, '构建失败'
+                return response_data['executable']['number']
+            sleep(1)
+        except requests.exceptions.RequestException as e:
+            raise SpugError(f'构建获取失败: {str(e)}')
+    raise SpugError('Jenkins构建超时，请重新发布')
 
-        # 推送到websockt 初始化信息
-        # 这里可能要重构任务名
-        helper.send_info('local', f'Jenkins任务已触发，真实任务构建号为: {build_number}\r\n')
-        log_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/logText/progressiveText"
-        start = 0
-        #  拼接状态请求 stage url
-        stage_url=f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/{build_number}/wfapi/describe"
-    #  实时获取jenkins日志
-        # 循环获取日志数据直到没有更多数据
-        # 该循环持续从服务器获取日志信息，直到服务器返回没有更多数据为止
-        # while True:
-        #     resp = requests.get(log_url, auth=auth, params={'start': start})
-        #     # 获取状态响应结果
-        #     stage_res = requests.get(stage_url, auth=auth)
-        #     print('stage_res',stage_res.json())
-        #     requests.get(log_url, auth=auth)
-        #     # print(resp.text, end="")
-        #     helper.send_info('local', resp.text)
-        #     more_data = resp.headers.get("X-More-Data")
-        #     text_size = int(resp.headers.get("X-Text-Size", 0))
-        #     start = text_size
-        #     # 检查是否还有更多数据，如果没有则退出循环
-        #     if more_data != "true":
-        #         break
-        #     sleep(1)
-    #    循环监测stage,获取stages字段列表，间隔1秒
-
-    #  输出 jenkins stage状态逻辑
-        build_status = 'IN_PROGRESS'
-        while build_status == 'IN_PROGRESS':
-            stage_res = requests.get(stage_url, auth=auth)
-            stage_data = stage_res.json()
-            #   获取stages字段，判断stages length
-            status = stage_data['status']
-            #  判断status是否SUCCESS，如果是则跳出循环
-            if status == 'SUCCESS':
-                helper.send_info('local', f'Jenkins任务构建完成！\r\n')
-                build_status = 'SUCCESS'
-                req.status = '3'
-            if 'stages' in stage_data:
-                stages = stage_data['stages']
-                # 获取stages数组长度
-                stage_len = len(stages)
-                prev_stage_len = rds.get(f'{req.do_by.username}-{build_number}')
-                if prev_stage_len is not None:
-                    prev_stage_len = int(prev_stage_len)  # 转换为整数
-
-                if prev_stage_len is None and stage_len > 0:
-                    rds.set(f'{req.do_by.username}-{build_number}', stage_len)
-                    for stage in stages:
-                        helper.send_info('local', f'Jenkins任务构建中...{stage["name"]}\r\n')
-                        #  输出stages的name
-                if prev_stage_len is not None and stage_len == prev_stage_len:
-                    continue
-                else:
-                    stages = stages[prev_stage_len:]
-                    for stage in stages:
-                        helper.send_info('local', f'Jenkins任务构建中...{stage["name"]}\r\n')
-                    rds.set(f'{req.do_by.username}-{build_number}', stage_len)
-    except requests.exceptions.RequestException as e:
-        helper.send_error('local', f'Jenkins请求失败: {str(e)}')
-        raise SpugError(f'Jenkins部署失败: {str(e)}')
-    except KeyError as e:
-        helper.send_error('local', f'Jenkins crumb数据解析失败: {str(e)}')
-        raise SpugError(f'Jenkins部署失败: {str(e)}')
 
 
 def _jenkins_log():
