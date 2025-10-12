@@ -11,6 +11,8 @@ import json
 import os
 
 
+
+
 class DeployRequest(models.Model, ModelMixin):
     STATUS = (
         ('-3', '发布异常'),
@@ -70,3 +72,35 @@ class DeployRequest(models.Model, ModelMixin):
     class Meta:
         db_table = 'deploy_requests'
         ordering = ('-id',)
+
+class JenkinsBuild(models.Model, ModelMixin):
+    STATUS = (
+        ('QUEUED', '排队中'),
+        ('RUNNING', '运行中'),
+        ('SUCCESS', '成功'),
+        ('FAILURE', '失败'),
+        ('UNSTABLE', '不稳定'),
+        ('ABORTED', '已中止'),
+    )
+    # 关联到唯一的发布申请
+    request = models.OneToOneField(DeployRequest, on_delete=models.CASCADE, primary_key=True)
+
+    # Jenkins 自身的信息
+    build_num = models.IntegerField(null=True, help_text="Jenkins Build Number")
+    build_url = models.CharField(max_length=255, null=True, help_text="Jenkins Build URL")
+
+    # 整体构建状态
+    status = models.CharField(max_length=20, choices=STATUS, default='QUEUED')
+
+    # 存储所有 Stage 的状态 (核心字段)
+    # 使用 TextField 存储 JSON 字符串以兼容所有数据库
+    stages = models.TextField(null=True, help_text="存储所有Stage的状态，JSON格式")
+
+    # 错误信息
+    error_message = models.TextField(null=True)
+
+    def __repr__(self):
+        return f'<JenkinsBuild request_id={self.request_id}>'
+
+    class Meta:
+        db_table = 'jenkins_builds'

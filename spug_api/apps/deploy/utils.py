@@ -107,7 +107,8 @@ def fetch_stage_status(req,jenkins_url, build_number, auth, headers):
             # 获取当前的构建状态
             if build_status == 'SUCCESS':
                 return 'SUCCESS', stages[prev_stage_len:]  # 如果构建成功，返回所有阶段
-
+            elif build_status == 'FAILED':
+                return 'FAILED',stages[prev_stage_len:]
             # 如果阶段数发生变化，实时反馈
             if prev_stage_len is None:  # 第一次获取阶段数据
                 prev_stage_len = stage_len
@@ -134,7 +135,7 @@ def fetch_stage_status(req,jenkins_url, build_number, auth, headers):
 
 def _ext3_deploy(req, helper, env):
     """ 部署构建任务 """
-    helper.send_info('local', '即将开始构建，请稍后…………\r\n')
+
     rds = get_redis_connection()
     jenkins_config = Setting.objects.get(key='jenkins_config')
     jenkins_url = json.loads(jenkins_config.value)['url']
@@ -144,7 +145,26 @@ def _ext3_deploy(req, helper, env):
     crumb_field, crumb_value = get_jenkins_crumb(jenkins_url, auth)
 
     build_url = f"{jenkins_url.rstrip('/')}/job/pipeline-scm-template/buildWithParameters"
-    params = {'name': 'zhujing'}
+    extra = json.loads(req.extra)
+
+
+    # params = {'NAME': req.do_by.username, 'SERVICE_NAME':req.deploy.app.name, 'GIT_REPO': req.deploy.extend_obj.git_repo}
+    if extra[0] == 'branch':
+        params = {'NAME': req.do_by.username, 'GIT_BRANCH': extra[1], 'GIT_COMMIT': extra[2], 'SERVICE_NAME': req.deploy.app.name, 'GIT_REPO': req.deploy.extend_obj.git_repo}
+    else:  # tag
+        params = {'NAME': req.do_by.username, 'GIT_TAG': extra[1], 'SERVICE_NAME': req.deploy.app.name, 'GIT_REPO': req.deploy.extend_obj.git_repo}
+    app=req.deploy.app
+    # 通过app.id和extend类型，查询configs对应的数据
+    configs = compose_configs(app, req.deploy.env_id)
+    # 打印configs数据
+    print(f"Configs: {configs}")
+    # java运行参数
+    java_params = []
+    for key, value in configs.items():
+        java_params.append(f"-D{key}={value}")
+    params['java_params'] = ' '.join(java_params)
+    print('parames',params)
+    helper.send_info('local', f'即将开始构建，请稍后…………\r\n,构建仓库：{req.deploy.extend_obj.git_repo}，构建分支：{extra[1]}，构建提交：{extra[2]}，构建环境：{req.deploy.env.name}，构建版本：{req.version}')
     build_json_url = trigger_jenkins_build(jenkins_url, build_url, crumb_field, crumb_value, auth, params)
 
     build_number = get_build_number(build_json_url, {'Authorization': f'Basic {auth}'}, auth)
@@ -185,20 +205,20 @@ def _ext3_deploy(req, helper, env):
         # 处理新阶段 - 只有当有新阶段时才输出
         if new_stages:
             for stage in new_stages:
-                helper.send_info('local', f'Jenkins任务---{stage.get("name")}----构建中, id号：{stage.get("id")}\r\n')
+                if stage.get("status") == "IN_PROGRESS":
+                    helper.send_info('local', f'Jenkins任务---{stage.get("name")}----构建中, id号：{stage.get("id")}\r\n')
+                    helper.send_info('local', f'Jenkins任务---{stage}----\r\n')
+                elif stage.get("status") == "FAILED":
+                    helper.send_error('local', f'Jenkins任务---{stage.get("name")}----构建失败, id号：{stage.get("id")},错误信息：{stage.get("error")}\r\n')
+                    raise SpugError('Jenkins构建失败')
 
-
-
-            # # 更新阶段数量
-            # stage_len = len(new_stages)
-            # if prev_stage_len is None:
-            #     prev_stage_len = stage_len
-            # else:
-            #     prev_stage_len += stage_len
-            # rds.set(f'{req.do_by.username}-{build_number}', prev_stage_len)
+        #     再次兜底
+        if build_status == 'FAILED':
+            helper.send_error('local', 'Jenkins构建失败, 请重新发布')
+            raise SpugError('Jenkins构建失败')
 
         # 如果构建成功，输出完成信息
-        if build_status == 'SUCCESS':
+        elif build_status == 'SUCCESS':
             helper.send_info('local', f'Jenkins任务构建完成！\r\n')
             req.status = '3'
             break
@@ -231,6 +251,7 @@ def trigger_jenkins_build(jenkins_url, build_url, crumb_field, crumb_value, auth
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     build_url += "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+    # print(build_url)
     try:
         build_response = requests.post(build_url, headers=headers, auth=auth, timeout=30)
         build_response.raise_for_status()
